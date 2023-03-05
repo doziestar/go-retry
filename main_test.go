@@ -1,4 +1,4 @@
-package goretry_test
+package goretry
 
 import (
     "errors"
@@ -8,7 +8,7 @@ import (
 
 func TestDelay(t *testing.T) {
     ro := RetryOptions{
-        delayFactor:      200 * time.Millisecond,
+        delayFactor:    200 * time.Millisecond,
         randomizationFactor: 0.25,
         maxDelay:         30 * time.Second,
         maxAttempts:      8,
