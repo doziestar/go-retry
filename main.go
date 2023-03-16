@@ -1,48 +1,69 @@
 package goretry
 
 import (
+	"context"
 	"fmt"
 	"math"
+	"math/rand"
 	"time"
 )
 
 type RetryOptions struct {
-	delayFactor         time.Duration
-	randomizationFactor float64
-	maxDelay            time.Duration
-	maxAttempts         int
+	DelayFactor         time.Duration
+	RandomizationFactor float64
+	MaxDelay            time.Duration
+	MaxAttempts         int
+	Timeout             time.Duration
 }
 
-func (ro *RetryOptions) delay(attempt int) time.Duration {
-	delayTime := time.Duration(math.Pow(2, float64(attempt)) * float64(ro.delayFactor) * (1 + ro.randomizationFactor*(math.Pow(2, float64(attempt))-1)))
-	if delayTime > ro.maxDelay {
-		delayTime = ro.maxDelay
+func (ro *RetryOptions) Delay(attempt int) time.Duration {
+	delayTime := time.Duration(math.Pow(2, float64(attempt)) * float64(ro.DelayFactor) * (1 + ro.RandomizationFactor*(rand.Float64()*2-1)))
+	if delayTime > ro.MaxDelay {
+		delayTime = ro.MaxDelay
 	}
 	return delayTime
 }
 
-func retry(fn func() error, ro RetryOptions, retryIf func(error) bool, onRetry func(int, error)) error {
+func Retry(ctx context.Context, fn func() error, ro RetryOptions, retryIf func(error) bool, onRetry func(int, error), onTimeout func()) error {
 	var err error
-	for attempt := 1; attempt <= ro.maxAttempts; attempt++ {
+	attempt := 0
+	startTime := time.Now()
+	for {
 		if err = fn(); err == nil {
 			return nil
 		} else if retryIf != nil && !retryIf(err) {
 			return err
 		}
 		if onRetry != nil {
-			onRetry(attempt, err)
+			onRetry(attempt+1, err)
 		}
-		time.Sleep(ro.delay(attempt))
+		attempt++
+		if attempt >= ro.MaxAttempts {
+			return err
+		}
+		delayTime := ro.Delay(attempt)
+		select {
+		case <-time.After(delayTime):
+			// continue with the next retry
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if ro.Timeout > 0 && time.Since(startTime) >= ro.Timeout {
+			if onTimeout != nil {
+				onTimeout()
+			}
+			return fmt.Errorf("retry timed out after %v", time.Since(startTime))
+		}
 	}
-	return err
 }
 
 func main() {
 	ro := RetryOptions{
-		delayFactor:         200 * time.Millisecond,
-		randomizationFactor: 0.25,
-		maxDelay:            30 * time.Second,
-		maxAttempts:         8,
+		DelayFactor:         200 * time.Millisecond,
+		RandomizationFactor: 0.25,
+		MaxDelay:            30 * time.Second,
+		MaxAttempts:         8,
+		Timeout:             5 * time.Minute,
 	}
 	fn := func() error {
 		fmt.Println("Trying...")
@@ -54,7 +75,10 @@ func main() {
 	onRetry := func(attempt int, err error) {
 		fmt.Printf("Attempt %d failed: %v\n", attempt, err)
 	}
-	if err := retry(fn, ro, retryIf, onRetry); err != nil {
-		fmt.Printf("Failed after %d attempts: %v\n", ro.maxAttempts, err)
+	onTimeout := func() {
+		fmt.Println("Retry timed out")
+	}
+	if err := Retry(context.Background(), fn, ro, retryIf, onRetry, onTimeout); err != nil {
+		fmt.Printf("Failed after %d attempts: %v\n", ro.MaxAttempts, err)
 	}
 }
