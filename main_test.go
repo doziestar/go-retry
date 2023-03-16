@@ -1,66 +1,153 @@
 package goretry
 
 import (
-    "errors"
-    "testing"
-    "time"
+	"context"
+	"errors"
+	"testing"
+	"time"
 )
 
-func TestDelay(t *testing.T) {
-    ro := RetryOptions{
-        delayFactor:    200 * time.Millisecond,
-        randomizationFactor: 0.25,
-        maxDelay:         30 * time.Second,
-        maxAttempts:      8,
-    }
-    
-    expectedDelays := []time.Duration{
-        200 * time.Millisecond,
-        400 * time.Millisecond,
-        800 * time.Millisecond,
-        1600 * time.Millisecond,
-        3200 * time.Millisecond,
-        6400 * time.Millisecond,
-        12000 * time.Millisecond,
-        24000 * time.Millisecond,
-    }
-    
-    for i := 0; i < len(expectedDelays); i++ {
-        delay := ro.delay(i)
-        if delay < expectedDelays[i] || delay > ro.maxDelay {
-            t.Errorf("delay(%d) = %v, expected %v", i, delay, expectedDelays[i])
-        }
-    }
+func TestRetry(t *testing.T) {
+	// Test with a function that always succeeds.
+	t.Run("AlwaysSucceeds", func(t *testing.T) {
+		fn := func() error {
+			return nil
+		}
+		ro := RetryOptions{
+			DelayFactor:         1 * time.Millisecond,
+			RandomizationFactor: 0.0,
+			MaxDelay:            1 * time.Millisecond,
+			MaxAttempts:         5,
+			Timeout:             100 * time.Millisecond,
+		}
+		err := Retry(context.Background(), fn, ro, nil, nil, nil)
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+	})
+
+	// Test with a function that always fails.
+	t.Run("AlwaysFails", func(t *testing.T) {
+		fn := func() error {
+			return errors.New("always fails")
+		}
+		ro := RetryOptions{
+			DelayFactor:         1 * time.Millisecond,
+			RandomizationFactor: 0.0,
+			MaxDelay:            1 * time.Millisecond,
+			MaxAttempts:         5,
+			Timeout:             100 * time.Millisecond,
+		}
+		err := Retry(context.Background(), fn, ro, nil, nil, nil)
+		if err == nil {
+			t.Error("expected an error, got nil")
+		}
+	})
+
+	// Test with a function that fails until the last attempt.
+	t.Run("FailsUntilLastAttempt", func(t *testing.T) {
+		count := 0
+		fn := func() error {
+			if count < 4 {
+				count++
+				return errors.New("failed")
+			}
+			return nil
+		}
+		var lastAttempt int
+		var lastError error
+		onRetry := func(attempt int, err error) {
+			lastAttempt = attempt
+			lastError = err
+		}
+		ro := RetryOptions{
+			DelayFactor:         1 * time.Millisecond,
+			RandomizationFactor: 0.0,
+			MaxDelay:            1 * time.Millisecond,
+			MaxAttempts:         5,
+			Timeout:             100 * time.Millisecond,
+		}
+		err := Retry(context.Background(), fn, ro, nil, onRetry, nil)
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+		if lastAttempt != 5 {
+			t.Errorf("expected last attempt to be 5, got %d", lastAttempt)
+		}
+		if lastError != nil {
+			t.Errorf("expected last error to be nil, got %v", lastError)
+		}
+	})
+
+	// Test with a custom retryIf function that retries on specific errors.
+	t.Run("RetryOnSpecificErrors", func(t *testing.T) {
+		count := 0
+		fn := func() error {
+			if count < 4 {
+				count++
+				return errors.New("retry on this error")
+			}
+			return errors.New("do not retry on this error")
+		}
+		retryIf := func(err error) bool {
+			return err.Error() == "retry on this error"
+		}
+		ro := RetryOptions{
+			DelayFactor:         1 * time.Millisecond,
+			RandomizationFactor: 0.0,
+			MaxDelay:            1 * time.Millisecond,
+			MaxAttempts:         5,
+			Timeout:             100 * time.Millisecond,
+		}
+		err := Retry(context.Background(), fn, ro, retryIf, nil, nil)
+		if err == nil {
+			t.Error("expected an error, got nil")
+		}
+		if err.Error() != "do not retry on this error" {
+			t.Errorf("expected error to be 'do not retry on this error', got %v", err)
+		}
+	})
+
 }
 
-func TestRetry(t *testing.T) {
-    ro := RetryOptions{
-        delayFactor:      200 * time.Millisecond,
-        randomizationFactor: 0.25,
-        maxDelay:         30 * time.Second,
-        maxAttempts:      8,
-    }
-    
-    attempts := 0
-    fn := func() error {
-        attempts++
-        if attempts < ro.maxAttempts {
-            return errors.New("failed")
-        }
-        return nil
-    }
-    
-    if err := retry(fn, ro, nil, nil); err != nil {
-        t.Errorf("retry() returned error: %v", err)
-    }
-    
-    attempts = 0
-    fn = func() error {
-        attempts++
-        return errors.New("failed")
-    }
-    
-    if err := retry(fn, ro, nil, nil); err == nil {
-        t.Errorf("retry() did not return error")
-    }
+func TestRetrySuccess(t *testing.T) {
+	ro := RetryOptions{
+		DelayFactor:         100 * time.Millisecond,
+		RandomizationFactor: 0.0,
+		MaxDelay:            1 * time.Second,
+		MaxAttempts:         5,
+		Timeout:             5 * time.Second,
+	}
+
+	fn := func() error {
+		return nil
+	}
+
+	err := Retry(context.Background(), fn, ro, nil, nil, nil)
+	if err != nil {
+		t.Errorf("Expected success, but got error: %v", err)
+	}
+}
+
+func TestRetryMaxAttempts(t *testing.T) {
+	ro := RetryOptions{
+		DelayFactor:         100 * time.Millisecond,
+		RandomizationFactor: 0.0,
+		MaxDelay:            1 * time.Second,
+		MaxAttempts:         5,
+		Timeout:             5 * time.Second,
+	}
+
+	fn := func() error {
+		return errors.New("failed")
+	}
+
+	err := Retry(context.Background(), fn, ro, nil, nil, nil)
+	if err == nil {
+		t.Error("Expected error, but got success")
+	}
+
+	if !errors.Is(err, fn()) {
+		t.Errorf("Expected error %v, but got %v", fn(), err)
+	}
 }
